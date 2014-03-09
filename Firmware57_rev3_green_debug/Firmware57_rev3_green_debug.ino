@@ -64,11 +64,13 @@ void runCommand(int cmd) {
         // test pattern for that one particular chip
         int tempProcID = (boardToAffect < 0x40) ? (procID & 0x3F) : procID;
         if (tempProcID == boardToAffect) {
-          showAddr();
+          makeTheF();
+          showAddrDebug();
         }
       } else {
         // every chip should show their test pattern
-        showAddr();
+        makeTheF();
+        showAddrDebug();
       }
     } else if (cmd == 0x81) {
       // This will recalculate the procIDs automatically for all boards
@@ -81,18 +83,21 @@ void runCommand(int cmd) {
       // Increment the procID of the desired board as long as it's not 0xFF already
       if (procID != 0xFF)
         procID++;
-      showAddr();
+      makeTheF();
+      showAddrDebug();
     } else if (cmd == 0x83 && (procID == boardToAffect)) {
       // Decrement the procID of the desired board as long as it's not 0x80 already
       if (procID != 0x80)
         procID--;
-      showAddr();
+      makeTheF();
+      showAddrDebug();
     } else if (cmd == 0x84 && (procID == boardToAffect)) {
       // Set the procID of the desired board to a particular value, which will be input next
       int newProcID = fetchOneSerialByte();          // value of the processor's new ID
       if (newProcID > 0x7F && newProcID <= 0xFF)     // If the new proc ID is within range,
         procID = newProcID;                          // Commit it as the processor ID
-      showAddr();
+      makeTheF();
+      showAddrDebug();
     } // end if cmd is in the 0x80s
   } else if (cmd < 0xA0) {
     // Codes ranging from 0x90 - 0x9F will change the serial baud rate dynamically on all boards.
@@ -118,6 +123,16 @@ void runCommand(int cmd) {
     }
     Serial.begin(newBaudRate);   // Begin the serial at the specified baud rate
   }
+  return;
+}
+
+void makeTheF() {
+  // Output a F-like shape to show all rows & columns are working
+  colData[0] = 127;      // first column of test pattern
+  colData[1] = 64;       // second column of test pattern
+  colData[2] = 64;       // third column of test pattern
+  colData[3] = 64;       // fourth column of test pattern
+  colData[4] = 64;       // fifth column of test pattern
   return;
 }
 
@@ -151,6 +166,8 @@ void setup() {
   // initialize the LED pins as outputs:
   for (int i = 1; i < 14; i++)
     pinMode(i, OUTPUT);
+  // Output a F-like shape to show all rows & columns are working
+  makeTheF();
   activeProc = false;    // this processor isn't active now
   delay(1000);           // stall for 1 second
   // initialize all the readings to 0: 
@@ -237,80 +254,44 @@ void loop() {
     runs++;
     delay(1);
   } else if (runs == numReadings) {
+    // Reset the column data to show the test pattern
+    makeTheF();
     // Calculate the ID of this processor based on the average calculated earlier
     procID = floor(val / 16); // find the "not-quite" board index
     procID = 63 - procID;  // flip the number around so lowest voltage drop comes first
     procID += 128;         // Proc IDs should always begin with 0x80
     procID += 64;          // GREEN ONLY: Add 64 (0x40) to the chip ID
     runs++;                // Go into the main loop after this
-    showAddr();       // Show debug output for addressing
+    showAddrDebug();       // Show debug output for addressing
   }
 }
 
-void showAddr() {
+void showAddrDebug() {
   // Output the chip ID onto the test pattern in this manner:
-  // 6  5  4  X  X    <- tens place
-  // X  X  3  2  1    <- tens place
-  // X  o  o  o  X
-  // X  o  o  o  X    o = ones place, show a digit
-  // X  o  o  o  X
-  // X  o  o  o  X
-  // X  o  o  o  X
-  clearPanel();
-  showAddrOnes();
-  showAddrTens();
-}
-
-void showAddrOnes() {
-  // Show the ones place numbers in the board address
-  // GREEN ONLY: Show a green dot on the left
-  colData[0] = 1;
-  // Right column is always full unless 2, 5, or 6
-  int baseVal = (procID % 64) % 10;
-  colData[3] = 31;
-  if (baseVal == 2) { colData[3] = 29; }
-  if (baseVal == 5 || baseVal == 6) { colData[3] = 23; }
-  // If we have a 1, we're done
-  if (baseVal == 1) { return; }
-  // Handle the 0 & 7 quickly
-  if (baseVal == 0) {
-    colData[2] = 17;
-    colData[1] = 31;
-    return;
-  } else if (baseVal == 7) {
-    colData[2] = 16;
-    colData[1] = 16;
-    return;
+  // X  X  X  X  X
+  // X  o  o  o  o
+  // X  o  o  o  o
+  // X  o  o  o  o
+  // X  o  o  o  o
+  // X  o  o 32 16
+  // X  8  4  2  1
+  for (int i = 7; i >= 0; i--) {
+    // Columns go from MSB to LSB as shown above, hence 4 - (i % 4)
+    // If procID has the (1 << i)th bit set, then shift that "1" value up by (i / 4) places
+    colData[4 - (i % 4)] |= ((procID & (1 << i)) == (1 << i)) << (i / 4);
   }
-  // Otherwise the middle column is usually 21, except for 4
-  colData[2] = (baseVal == 4) ? 4 : 21;
-  // Now do the left column
-  if (baseVal == 2) {
-    colData[1] = 23;
-  } else if (baseVal == 3) {
-    colData[1] = 21;
-  } else if (baseVal == 4) {
-    colData[1] = 28;
-  } else if (baseVal == 5 || baseVal == 9) {
-    colData[1] = 29;
-  } else {
-    colData[1] = 31;
+  // Output the raw A7 pin reading onto the test pattern in this manner:
+  // X    X   X   X   X
+  // X    o  1k 512 256 
+  // X  128  64  32  16
+  // X    8   4   2   1
+  // X    o   o   o   o
+  // X    o   o   o   o
+  // X    o   o   o   o
+  for (int i = 11; i >= 0; i--) {
+    // Columns go from MSB to LSB as shown above, hence 4 - (i % 4)
+    // If val has the (1 << i)th bit set, then shift that "1" value up by (i / 4) + 3 places
+    // +3 because we need this to appear 3 rows higher than the bottom
+    colData[4 - (i % 4)] |= ((val & (1 << i)) == (1 << i)) << ((i / 4) + 3);
   }
-}
-
-void showAddrTens() {
-  // Show the tens place numbers in the board address
-  int baseVal = (procID % 64);
-  if (baseVal >= 60)
-    colData[4] |= 32;
-  if (baseVal >= 50)
-    colData[3] |= 32;
-  if (baseVal >= 40)
-    colData[2] |= 32;
-  if (baseVal >= 30)
-    colData[2] |= 64;
-  if (baseVal >= 20)
-    colData[1] |= 64;
-  if (baseVal >= 10)
-    colData[0] |= 64;
 }
