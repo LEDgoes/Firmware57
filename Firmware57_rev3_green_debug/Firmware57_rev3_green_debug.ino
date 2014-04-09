@@ -1,15 +1,17 @@
 /**********************************************************************
  * Modular Scrolling LED Matrix - LED Board Firmware
- * (C) 2011-2014 Stephen Wylie
+ * (C) 2011-2014 Stephen Wylie & Stacy Wylie
  *
- * REVISION 3.0
+ * REVISION 3.1
  * Standardized which CPU output pins lead to which cathodes/anodes.
  * Added the auto-addressing scheme.
  * Implemented control codes for finer firmware control.
  *
  **********************************************************************/
 
-int procID;
+#include <EEPROM.h>
+
+int procID = 0;  //Processor ID
 int rowActive[7] = {6, 11, 9, 10, 3, 4, 13};
 int colActive[5] = {5, 7, 8, 2, 12};
 unsigned long supportedBauds[16] = {9600, 14400, 19200, 28800, 38400, 57600, 76800, 
@@ -98,7 +100,26 @@ void runCommand(int cmd) {
         procID = newProcID;                          // Commit it as the processor ID
       makeTheF();
       showAddrDebug();
-    } // end if cmd is in the 0x80s
+    } else if (cmd == 0x85 && (procID == boardToAffect)) {
+      // Save our address (eeprom)
+      // This will have each board saving their address to the EEPROM
+      makeTheF(); // Show the user that you are changing this board
+      int byteAddr = 0;
+      eepromClearAddr(byteAddr); 
+      eepromSave(byteAddr, procID); //save It
+      eepromRead(byteAddr); //Read the new address to be used 
+      showAddrDebug(); //Show the Address
+    } else if (cmd == 0x86 && (procID == boardToAffect)) {
+      //Clear your address
+      int byteAddr = 0;
+      eepromClearAddr(byteAddr);
+      procID = 0; 
+    } else if (cmd == 0x87) {
+      // Clear your address
+      eepromClear();
+      makeTheF(); // Show that the operation completed
+    } 
+    // end if cmd is in the 0x80s
   } else if (cmd < 0xA0) {
     // Codes ranging from 0x90 - 0x9F will change the serial baud rate dynamically on all boards.
     Serial.end();                  // Stop the serial port
@@ -155,6 +176,37 @@ void clearReads() {
   return;
 }
 
+//Clears the Entire EEPROM
+void eepromClear() {
+  //ATmega168 has 512 bytes of EEPROM, ATmega328 has 1024 
+  for (int i = 0; i < 512; i++)
+  EEPROM.write(i, 0);
+}
+
+//Clears specific EEPROM address
+void eepromClearAddr(int addr) {
+  EEPROM.write(addr,0);
+}
+
+//Saves the desired value to the EEPROM
+void eepromSave(int byteLoc, int brdAddr){
+  EEPROM.write(byteLoc, brdAddr);
+}
+
+//Read the value at this address on the EEPROM
+int eepromRead(int byteLoc) {
+  return EEPROM.read(byteLoc); 
+}
+
+// Load the Saved Address
+void readSavedAddr() {
+ int byteLoc = 0;
+ int proc = eepromRead(byteLoc); 
+ if (proc != 0){ 
+  procID = proc;
+ } 
+}
+
 void setup() {
   
   // show power
@@ -168,6 +220,7 @@ void setup() {
     pinMode(i, OUTPUT);
   // Output a F-like shape to show all rows & columns are working
   makeTheF();
+  readSavedAddr();       // Read any saved address 
   activeProc = false;    // this processor isn't active now
   delay(1000);           // stall for 1 second
   // initialize all the readings to 0: 
@@ -253,14 +306,16 @@ void loop() {
     val = total / numReadings;
     runs++;
     delay(1);
-  } else if (runs == numReadings) {
+  } else if (runs == numReadings || procID == 0) {
     // Reset the column data to show the test pattern
     makeTheF();
-    // Calculate the ID of this processor based on the average calculated earlier
-    procID = floor(val / 16); // find the "not-quite" board index
-    procID = 63 - procID;  // flip the number around so lowest voltage drop comes first
-    procID += 128;         // Proc IDs should always begin with 0x80
-    procID += 64;          // GREEN ONLY: Add 64 (0x40) to the chip ID
+    if (procID == 0){
+      // Calculate the ID of this processor based on the average calculated earlier
+      procID = floor(val / 16); // find the "not-quite" board index
+      procID = 63 - procID;  // flip the number around so lowest voltage drop comes first
+      procID += 128;         // Proc IDs should always begin with 0x80
+      procID += 64;          // GREEN ONLY: Add 64 (0x40) to the chip ID
+    }
     runs++;                // Go into the main loop after this
     showAddrDebug();       // Show debug output for addressing
   }
