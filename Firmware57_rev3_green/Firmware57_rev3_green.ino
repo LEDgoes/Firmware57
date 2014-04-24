@@ -104,7 +104,7 @@ void runCommand(int cmd) {
       // This will have each board save their address to the EEPROM
       eepromClearAddr(ADDR_BOARD);
       eepromSave(ADDR_BOARD, procID); //save It
-      procID = eepromRead(ADDR_BOARD); //Read the new address to be used 
+      procID = eepromRead(ADDR_BOARD); //Read the new address to be used
     } else if (cmd == 0x86 && (procID == boardToAffect)) {
       //Clear your address
       eepromClearAddr(ADDR_BOARD);
