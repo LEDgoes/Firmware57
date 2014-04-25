@@ -13,9 +13,8 @@
 #define ADDR_BOARD   0
 #define ADDR_BAUD    3
 
-int procID = 0;  //Processor ID
-int rowActive[7] = {6, 11, 9, 10, 3, 4, 13};
-int colActive[5] = {5, 7, 8, 2, 12};
+int procID;  //Processor ID
+int colShift[5] = {5, 7, 0, 2, 4};
 unsigned long supportedBauds[16] = {9600, 14400, 19200, 28800, 38400, 57600, 76800, 
 115200, 200000, 250000, 500000, 1000000, 9600, 9600, 9600, 9600};
 int portBmask = 0b10001;
@@ -105,7 +104,7 @@ void runCommand(int cmd) {
       eepromClearAddr(ADDR_BOARD);
       eepromSave(ADDR_BOARD, procID); //save It
       procID = eepromRead(ADDR_BOARD); //Read the new address to be used 
-      showAddrDebug(); //Show the Address
+      showAddr(); //Show the Address
     } else if (cmd == 0x86 && (procID == boardToAffect)) {
       //Clear your address
       eepromClearAddr(ADDR_BOARD);
@@ -130,6 +129,20 @@ void runCommand(int cmd) {
       eepromClearAddr(ADDR_BAUD); //EEPROM address of Baud
     }
     // end if cmd is in the 0x90s
+  } else if (cmd < 0xB0) {
+    int boardToAffect = fetchOneSerialByte();   // find out which board needs to change
+    if (cmd == 0xA0) {
+      // Send the firmware revision over serial, or be quiet
+      if (procID == boardToAffect) {
+        delay(100);          // Wait for other chips to stop driving
+        Serial.write("3.2"); // Send the revision number
+      } else {
+        Serial.end();        // Stop driving the line
+        delay(300);          // Wait for the transmission to finish
+        serialBaudReset(currentBaud);   // Resume serial comm
+      }
+    }
+    // end if cmd is in the 0xA0s
   }
   return;
 }
@@ -150,11 +163,12 @@ void clearReads() {
   runs = 0;     // the index of the current reading
   total = 0;    // the running total
   val = 0;      // raw value from the auto-addressing pin
+  procID = 0;   // reset the procID itself
   return;
 }
 
 //Serial Baud restart
-void serialBaudReset(int serVal) (
+void serialBaudReset(int serVal) {
    // Codes ranging from 0x90 - 0x9F will change the serial baud rate dynamically on all boards.
     Serial.end();                  // Stop the serial port
     delay(100);                    // Delay 0.1 seconds
@@ -186,7 +200,7 @@ void serialBaudReset(int serVal) (
 void eepromClear() {
   //ATmega168 has 512 bytes of EEPROM, ATmega328 has 1024 
   for (int i = 0; i < 512; i++)
-      EEPROM.write(i, 0);
+    EEPROM.write(i, 0);
 }
 
 //Clears specific EEPROM address
@@ -214,16 +228,15 @@ void getSavedBoardAddr() {
 void setup() {
 
   inLoop = false;
-  // show power
-  digitalWrite(colActive[0], HIGH);
-  digitalWrite(rowActive[0], HIGH);
-  digitalWrite(colActive[0], LOW);
+  // show power by lighting up the bottom row
+  PORTD |= 0b01100000;  // bit 6 is the bottom row; bit 5 is the left column
+  PORTD &= 0b11011111;  // set the column to Low
   // serialBaudReset can initialize serial communication too ;)
   serialBaudReset(eepromRead(ADDR_BAUD));
   // initialize the LED pins as outputs:
   for (int i = 1; i < 14; i++)
     pinMode(i, OUTPUT);
-  getSavedBoardAddr();       // Read any saved address 
+  getSavedBoardAddr();   // Read any saved address
   activeProc = false;    // this processor isn't active now
   delay(1000);           // stall for 1 second
   // initialize all the readings to 0: 
@@ -286,21 +299,26 @@ void loop() {
     PORTD = portDmask;      // rewrite all the row pins LOW so they're turned off
 
     // do all the changes to the row pins
-    for (int i = 0; i < 7; i++) {
-      if ((colData[activeCol] & rowNums[i]) == rowNums[i]) {
-        digitalWrite(rowActive[i], HIGH);
-      }
-    }
+    PORTD |= (colData[activeCol] & 0x01) << 6;  // row 1, PD6
+    PORTB |= (colData[activeCol] & 0x02) << 2;  // row 2, PB3
+    PORTB |= (colData[activeCol] & 0x04) >> 1;  // row 3, PB1
+    PORTB |= (colData[activeCol] & 0x08) >> 1;  // row 4, PB2
+    PORTD |= (colData[activeCol] & 0x10) >> 1;  // row 5, PD3
+    PORTD |= (colData[activeCol] & 0x20) >> 1;  // row 6, PD4
+    PORTB |= (colData[activeCol] & 0x40) >> 1;  // row 7, PB5
     // set up the column to be active (LOW) again
-    digitalWrite(colActive[activeCol], LOW);
-    // take some time to let the LEDs come up
-    delay(1);
+    int colMask = 0xFF - (1 << colShift[activeCol]);
+    if (activeCol == 2 || activeCol == 4) {
+      PORTB &= colMask;
+    } else {
+      PORTD &= colMask;
+    }
     // increment activeCol but keep within the bounds of 0-4
     activeCol++;
     activeCol %= 5;
   } else if (runs < numReadings) { 
     // subtract the last reading:
-    total= total - readings[runs];         
+    total = total - readings[runs];
     // read from the sensor:  
     readings[runs] = analogRead(analogIn); 
     // add the reading to the total:
@@ -310,9 +328,11 @@ void loop() {
     val = total / numReadings;
     runs++;
     delay(1);
-  } else if (runs == numReadings || procID == 0 ) {
-    if(procID == 0){
-    // Calculate the ID of this processor based on the average calculated earlier
+  } else if (runs == numReadings) {
+    // Figure & show the test pattern consisting of board address
+    getSavedBoardAddr();   // get board ID from EEPROM
+    if (procID == 0) {
+      // Calculate the ID of this processor based on the average calculated earlier
       procID = floor(val / 16); // find the "not-quite" board index
       procID = 63 - procID;  // flip the number around so lowest voltage drop comes first
       procID += 128;         // Proc IDs should always begin with 0x80
