@@ -2,10 +2,9 @@
  * Modular Scrolling LED Matrix - LED Board Firmware
  * (C) 2011-2014 Stephen Wylie & Stacy Wylie
  *
- * REVISION 3.2
- * Standardized which CPU output pins lead to which cathodes/anodes.
- * Added the auto-addressing scheme.
- * Implemented control codes for finer firmware control.
+ * REVISION 3.4
+ * Changed serial signal to enter control mode.
+ * Revised main loop to read all serial input before handling lights.
  *
  **********************************************************************/
 #include <EEPROM.h>
@@ -21,6 +20,14 @@ int portBmask = 0b10001;
 int portDmask = 0b10100100;
 int currentBaud = 0;
 boolean inLoop;
+// cmdModePassword is a "finite state machine" where if all the bytes below are received in order,
+// the Command Mode will be unlocked
+// It equals the ASCII for "PassWord" + 0x80 on each character, then finishing with 0xFF
+byte cmdModePassword[9] = {0xD0, 0xE1, 0xF3, 0xF3, 0xD7, 0xEF, 0xF2, 0xE4, 0xFF};
+// cmdModeFSM stores which bit of the cmdModePassword we are expecting next
+int cmdModeFSM = 0;
+// serialAvailable stores how many bytes of serial data are available on the buffer
+int serialAvailable = 0;
 
 // if colData[col] & rowNums[row] != 0, then activate pin # rowActive[row]
 // colActive stores which pin # to activate for a particular column
@@ -131,16 +138,18 @@ void runCommand(int cmd) {
     // end if cmd is in the 0x90s
   } else if (cmd < 0xB0) {
     int boardToAffect = fetchOneSerialByte();   // find out which board needs to change
-    if (cmd == 0xA0) {
-      // Send the firmware revision over serial, or be quiet
-      if (procID == boardToAffect) {
-        delay(100);          // Wait for other chips to stop driving
-        Serial.write("3.2"); // Send the revision number
-      } else {
-        Serial.end();        // Stop driving the line
-        delay(300);          // Wait for the transmission to finish
-        serialBaudReset(currentBaud);   // Resume serial comm
+    if (procID == boardToAffect) {
+      delay(200);          // Wait for other chips to stop driving
+      if (cmd == 0xA0) {
+        // Send the firmware revision over serial
+        Serial.write("3.4"); // Send the revision number
       }
+    } else {
+      Serial.end();        // Stop driving the line
+      pinMode(1, INPUT);   // Really stop driving the line
+      delay(500);          // Wait for the transmission to finish
+      pinMode(1, OUTPUT);  // Prepare the serial out pin to be an output again
+      serialBaudReset(currentBaud);   // Resume serial comm
     }
     // end if cmd is in the 0xA0s
   }
@@ -249,29 +258,37 @@ void loop() {
   
   if (runs > numReadings) {
     // see if there's incoming serial data:
-    if (Serial.available() > 0) {
+    // YOU MUST UNDO TO THIS POINT IF YOU WANT TO REVERT CHANGES
+    serialAvailable = Serial.available();
+    for (int i = 0; i < serialAvailable; i++) {
       // read the oldest byte in the serial buffer:
       incomingByte = Serial.read();
       // if it's the reserved bit, start changing the letter:
-      if ((incomingByte & 0x80) == 0x80) {     // otherwise if bit 8 is set (indicating a proc ID that's not us),
+      if (incomingByte < 0x80) {               // if the incoming byte is less than 0x80, it's a letter
+        if (activeProc) {                      // if this proc is active,
+          colData[colWriter++] = incomingByte; // change the column of this proc to be the incoming byte
+          activeProc = (colWriter < 5);        // don't let the column index overflow
+        }
+        cmdModeFSM = 0;                        // no bytes of the password are < 0x80
+      } else {                                 // otherwise if bit 8 is set,
         activeProc = false;                    // don't reset the column values on this processor 
         if (!cmdMode) {
           if (incomingByte == procID) {        // if the reserved bit = this proc's ID,
             colWriter = 0;                     // reset column writer to the first column (2 in this case)
             activeProc = true;                 // mark this as the active processor
           }
-          cmdMode = (incomingByte == 0xFF);   // Address 0xFF could be a valid board or a control signal
+          // increment cmdModeFSM if the incoming byte is the next byte of the password; otherwise reset the FSM
+          cmdModeFSM = (incomingByte == cmdModePassword[cmdModeFSM]) ? cmdModeFSM + 1 : 0;
+          if (cmdModeFSM == 9) {               // If we've seen all 9 bytes of the password,
+            cmdMode = true;                    // go into command mode
+            cmdModeFSM = 0;                    // reset the FSM so we can receive the password all over again
+          }
         } else {
           runCommand(incomingByte);            // Handle the command we just received
-          cmdMode = false;
+          cmdMode = false;                     // Make sure we don't run in command mode on the next byte
+          break;                               // Break the loop since we just read an unknown # of bytes
         }
-      } else {                                 // if the incoming byte is < 0x80, it's a letter
-        if (colWriter < 5 && activeProc) {     // if this proc is active & the column being written is < 5,
-          colData[colWriter] = incomingByte;   // change the column of this proc to be the incoming byte
-          colWriter++;  
-        }
-        cmdMode = false;
-      }
+      } 
     }
     
     // This following portion needs to run regardless of if serial is available
@@ -301,11 +318,8 @@ void loop() {
     // do all the changes to the row pins
     PORTD |= (colData[activeCol] & 0x01) << 6;  // row 1, PD6
     PORTB |= (colData[activeCol] & 0x02) << 2;  // row 2, PB3
-    PORTB |= (colData[activeCol] & 0x04) >> 1;  // row 3, PB1
-    PORTB |= (colData[activeCol] & 0x08) >> 1;  // row 4, PB2
-    PORTD |= (colData[activeCol] & 0x10) >> 1;  // row 5, PD3
-    PORTD |= (colData[activeCol] & 0x20) >> 1;  // row 6, PD4
-    PORTB |= (colData[activeCol] & 0x40) >> 1;  // row 7, PB5
+    PORTB |= (colData[activeCol] & 0x4C) >> 1;  // row 3, PB1; row 4, PB2; // row 7, PB5
+    PORTD |= (colData[activeCol] & 0x30) >> 1;  // row 5, PD3; row 6, PD4
     // set up the column to be active (LOW) again
     int colMask = 0xFF - (1 << colShift[activeCol]);
     if (activeCol == 2 || activeCol == 4) {

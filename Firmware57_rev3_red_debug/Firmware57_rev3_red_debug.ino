@@ -172,7 +172,7 @@ void clearReads() {
 
 
 //Serial Baud restart
-void serialBaudReset(int serVal) (
+void serialBaudReset(int serVal) {
    // Codes ranging from 0x90 - 0x9F will change the serial baud rate dynamically on all boards.
     Serial.end();                  // Stop the serial port
     delay(100);                    // Delay 0.1 seconds
